@@ -1,0 +1,5 @@
+{
+  "name": "Veritas: AI News Fact-Checker",
+  "description": "A powerful news verification tool that uses Google Search and Gemini AI to detect misinformation and provide factual context.",
+  "requestFramePermissions": []
+}
