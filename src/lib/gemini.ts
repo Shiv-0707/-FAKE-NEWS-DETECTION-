@@ -1,6 +1,23 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+let aiClient: GoogleGenAI | null = null;
+
+function getAiClient(): GoogleGenAI {
+  if (!aiClient) {
+    const key = process.env.GEMINI_API_KEY || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+    
+    // Masked log for debugging
+    const masked = key ? `${key.substring(0, 4)}...${key.substring(key.length - 4)}` : "EMPTY";
+    console.log(`Frontend getAiClient called. Key found: ${masked}`);
+
+    if (!key || key === "MY_GEMINI_API_KEY" || key.includes("TODO")) {
+      throw new Error("Veritas Access Key (GEMINI_API_KEY) is missing. Please configure it in the Settings menu.");
+    }
+    
+    aiClient = new GoogleGenAI({ apiKey: key });
+  }
+  return aiClient;
+}
 
 export interface FactCheckResult {
   reasoningProcess: string;
@@ -26,28 +43,47 @@ export interface FactCheckResult {
   }[];
 }
 
-export async function factCheckNews(claim: string): Promise<FactCheckResult> {
-  if (!process.env.GEMINI_API_KEY && !(import.meta as any).env.VITE_GEMINI_API_KEY) {
-    throw new Error("Gemini API Key is missing. Please check your .env file.");
+export async function checkSystemHealth(): Promise<{ status: "ok" | "blocked" | "limited", message?: string }> {
+  try {
+    const ai = getAiClient();
+    await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ role: "user", parts: [{ text: "ping" }] }]
+    });
+    return { status: "ok" };
+  } catch (error: any) {
+    const msg = error.message || "";
+    const isQuota = msg.includes("429") || msg.toLowerCase().includes("quota") || msg.toLowerCase().includes("limit");
+    if (isQuota) {
+      return { status: "limited", message: "System is currently rate-limited. Please wait 60 seconds." };
+    }
+    return { status: "blocked", message: msg };
   }
-  
-  const rawData: string[] = [];
+}
+
+export async function factCheckNews(
+  claim: string, 
+  onRetry?: (waitTime: number) => void,
+  onStepComplete?: () => void
+): Promise<FactCheckResult> {
   const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
   async function callWithRetry(fn: () => Promise<any>, maxRetries = 3): Promise<any> {
     for (let i = 0; i < maxRetries; i++) {
       try {
-        return await fn();
+        const result = await fn();
+        if (onStepComplete) onStepComplete();
+        return result;
       } catch (error: any) {
         const errorMsg = error?.message || "";
-        const isRateLimit = error?.status === 429 || 
-                          errorMsg.toLowerCase().includes("quota") || 
+        const isRateLimit = errorMsg.toLowerCase().includes("quota") || 
                           errorMsg.toLowerCase().includes("limit") ||
                           errorMsg.includes("429");
         
         if (isRateLimit && i < maxRetries - 1) {
-          const waitTime = Math.pow(2, i) * 15000 + Math.random() * 2000; // 15s, 30s, 60s...
-          console.warn(`Rate limit hit, retrying in ${Math.round(waitTime/1000)}s... (Attempt ${i + 1}/${maxRetries})`);
+          const waitTime = 62000; 
+          console.warn(`Rate limit hit. System will STOP and wait for 62s before continuing... (Attempt ${i + 1}/${maxRetries})`);
+          if (onRetry) onRetry(waitTime);
           await delay(waitTime);
           continue;
         }
@@ -57,93 +93,65 @@ export async function factCheckNews(claim: string): Promise<FactCheckResult> {
   }
 
   try {
-    // Step 1: Initial Research & Strategy (Combined)
-    const initialResponse = await callWithRetry(() => ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: `Exhaustively research this claim: "${claim}". 
-      1. Find credible sources and official records.
-      2. Identify 6 critical research questions (3 to prove it TRUE, 3 to prove it FALSE).`,
-      config: { 
-        tools: [{ googleSearch: {} }], 
-        temperature: 0,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            sources: { type: Type.STRING },
-            questions: { type: Type.ARRAY, items: { type: Type.STRING } }
+    const ai = getAiClient();
+    const response = await callWithRetry(async () => {
+      const resp = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ 
+          role: "user", 
+          parts: [{ text: `Perform an exhaustive, multi-step investigative fact-check for this claim: "${claim}".
+
+      YOUR TASK (DO ALL IN THIS SINGLE REQUEST):
+      1. RESEARCH: Search for the claim's origin, official records, and credible news reports.
+      2. INVESTIGATE: Cross-reference at least 5 different sources. Look for contradictions or bias.
+      3. ANALYZE: Evaluate the linguistic tone, sentiment, and potential political/corporate bias.
+      4. SYNTHESIZE: Formulate a final verdict based on the weight of evidence.
+
+      CRITICAL: The 'veracityScore' must be an integer from 0 to 100. 
+      - 100 = Absolutely True
+      - 0 = Absolutely False
+      - Ensure the score matches the 'verdict' (e.g., 'True' should have a score > 80, 'False' < 20).
+
+      SENTIMENT ANALYSIS:
+      - Provide a precise 'sentiment.score' from -1.0 (extremely negative/hostile) to 1.0 (extremely positive/supportive).
+      - The 'sentiment.label' should be one of: "Positive", "Neutral", "Negative".
+      - Base this on the collective tone of the reporting and the claim itself.
+
+      Provide the final Veritas Fact-Check Report in the required JSON format.` }]
+        }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              reasoningProcess: { type: Type.STRING },
+              headline: { type: Type.STRING },
+              veracityScore: { type: Type.NUMBER },
+              verdict: { type: Type.STRING, enum: ["True", "Mostly True", "Mixed", "Mostly False", "False", "Unverified"] },
+              summary: { type: Type.STRING },
+              detailedAnalysis: { type: Type.STRING },
+              sentiment: { type: Type.OBJECT, properties: { score: { type: Type.NUMBER }, label: { type: Type.STRING } }, required: ["score", "label"] },
+              tone: { type: Type.STRING },
+              biasAnalysis: { type: Type.OBJECT, properties: { label: { type: Type.STRING }, description: { type: Type.STRING } }, required: ["label", "description"] },
+              sources: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { title: { type: Type.STRING }, url: { type: Type.STRING }, snippet: { type: Type.STRING }, credibility: { type: Type.STRING } }, required: ["title", "url", "snippet", "credibility"] } }
+            },
+            required: ["reasoningProcess", "headline", "veracityScore", "verdict", "summary", "detailedAnalysis", "sentiment", "tone", "biasAnalysis", "sources"]
           },
-          required: ["sources", "questions"]
+          systemInstruction: "You are an elite investigative journalist. Use Google Search to find the most recent and accurate information. Provide an extremely precise, evidence-based report.",
+          tools: [{ googleSearch: {} }]
         }
-      }
-    }));
-    
-    const initialData = JSON.parse(initialResponse.text || '{"sources":"","questions":[]}');
-    rawData.push(`Initial Research: ${initialData.sources}`);
-    const allQuestions = initialData.questions;
-    await delay(5000);
-
-    // Steps 2-3: Deep Investigations (Reduced to 2 high-impact requests to save quota)
-    for (let i = 0; i < 2; i++) {
-      const q = allQuestions[i] || allQuestions[0];
-      const searchResponse = await callWithRetry(() => ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: `Deep dive investigation: "${q}". Cross-reference multiple sources and look for contradictions.`,
-        config: { tools: [{ googleSearch: {} }], temperature: 0 }
-      }));
-      rawData.push(`Investigation ${i+1}: ${searchResponse.text}`);
-      await delay(7000); // Increased delay to stay under 15 requests/min
-    }
-
-    // Step 4: Synthesis & Final Report Generation (Combined into one call)
-    const finalResponse = await callWithRetry(() => ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: `Generate the final Veritas Fact-Check Report for: "${claim}".
+      });
       
-      Gathered Evidence:
-      ${rawData.join("\n\n")}
-      
-      Task:
-      1. Analyze all evidence for contradictions, bias, and missing links.
-      2. Synthesize a final verdict.
-      3. Provide the report in the required JSON format.`,
-      config: {
-        temperature: 0,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            reasoningProcess: { type: Type.STRING },
-            headline: { type: Type.STRING },
-            veracityScore: { type: Type.NUMBER },
-            verdict: { type: Type.STRING, enum: ["True", "Mostly True", "Mixed", "Mostly False", "False", "Unverified"] },
-            summary: { type: Type.STRING },
-            detailedAnalysis: { type: Type.STRING },
-            sentiment: { type: Type.OBJECT, properties: { score: { type: Type.NUMBER }, label: { type: Type.STRING } }, required: ["score", "label"] },
-            tone: { type: Type.STRING },
-            biasAnalysis: { type: Type.OBJECT, properties: { label: { type: Type.STRING }, description: { type: Type.STRING } }, required: ["label", "description"] },
-            sources: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { title: { type: Type.STRING }, url: { type: Type.STRING }, snippet: { type: Type.STRING }, credibility: { type: Type.STRING } }, required: ["title", "url", "snippet", "credibility"] } }
-          },
-          required: ["reasoningProcess", "headline", "veracityScore", "verdict", "summary", "detailedAnalysis", "sentiment", "tone", "biasAnalysis", "sources"]
-        },
-        systemInstruction: "You are an elite investigative journalist. Provide an extremely precise, evidence-based report."
-      }
-    }));
+      return JSON.parse(resp.text);
+    });
 
-    return JSON.parse(finalResponse.text || "{}") as FactCheckResult;
+    return response as FactCheckResult;
   } catch (error: any) {
-    console.error("Gemini API Error:", error);
+    console.error("Veritas Engine Error:", error);
     let errorMsg = error?.message || "Failed to analyze the news.";
     
-    if (errorMsg.includes("{")) {
-      try {
-        const parsed = JSON.parse(errorMsg.substring(errorMsg.indexOf("{")));
-        if (parsed.error?.message) errorMsg = parsed.error.message;
-      } catch (e) {}
-    }
-
-    if (error?.status === 429 || errorMsg.toLowerCase().includes("quota") || errorMsg.toLowerCase().includes("limit")) {
-      throw new Error("API Quota Exhausted: The Free Tier limit (15 requests/min) has been reached. Please wait 60 seconds for the system to reset.");
+    if (errorMsg.toLowerCase().includes("quota") || errorMsg.toLowerCase().includes("limit") || errorMsg.includes("429")) {
+      throw new Error(`System Busy: Quota reached. Please wait a moment and try again.`);
     }
     throw new Error(errorMsg);
   }

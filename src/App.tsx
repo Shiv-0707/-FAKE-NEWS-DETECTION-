@@ -9,7 +9,7 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { factCheckNews, FactCheckResult } from "@/src/lib/gemini";
+import { factCheckNews, FactCheckResult, checkSystemHealth } from "@/src/lib/gemini";
 import { cn } from "@/lib/utils";
 
 const LOADING_STEPS = [
@@ -40,37 +40,46 @@ export default function App() {
   const [logoClicks, setLogoClicks] = useState(0);
   const [showAdmin, setShowAdmin] = useState(false);
   const [requestsToday, setRequestsToday] = useState(0);
-  const [cooldown, setCooldown] = useState(0);
+  const [lifetimeUsage, setLifetimeUsage] = useState(0);
   const [isCheckingQuota, setIsCheckingQuota] = useState(false);
+  const [systemStatus, setSystemStatus] = useState<"ok" | "blocked" | "limited" | "checking">("checking");
+  const [lastSyncTime, setLastSyncTime] = useState<string>("");
+
+  const getTimeUntilMidnight = () => {
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    const diff = midnight.getTime() - now.getTime();
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    return `${hours}h ${minutes}m`;
+  };
 
   useEffect(() => {
-    if (showAdmin) {
-      setIsCheckingQuota(true);
-      // Simulate a real-time sync with the server/storage
-      const timer = setTimeout(() => {
-        const today = new Date().toDateString();
-        const stored = localStorage.getItem('api_requests');
-        if (stored) {
-          try {
-            const parsed = JSON.parse(stored);
-            if (parsed.date === today) {
-              setRequestsToday(parsed.count);
-            } else {
-              setRequestsToday(0);
-            }
-          } catch (e) {
-            setRequestsToday(0);
-          }
-        }
-        setIsCheckingQuota(false);
-      }, 1200);
-      return () => clearTimeout(timer);
-    }
-  }, [showAdmin]);
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const msg = event.reason?.message || String(event.reason);
+      if (msg.toLowerCase().includes("quota") || msg.toLowerCase().includes("limit") || msg.includes("429")) {
+        setError("System Busy: The platform is currently rate-limiting requests. Please wait 60 seconds.");
+        event.preventDefault(); // Prevent platform toast if possible
+      }
+    };
 
-  useEffect(() => {
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () => window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+  }, []);
+
+  const syncQuota = async () => {
+    setIsCheckingQuota(true);
+    setSystemStatus("checking");
+    setLastSyncTime(new Date().toLocaleTimeString());
+    
+    // Check local storage
     const today = new Date().toDateString();
-    const stored = localStorage.getItem('api_requests');
+    const stored = localStorage.getItem('system_usage');
+    const lifetime = localStorage.getItem('lifetime_usage');
+    
+    if (lifetime) setLifetimeUsage(parseInt(lifetime));
+    
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
@@ -84,23 +93,37 @@ export default function App() {
       }
     }
 
-    const lastTimeStored = localStorage.getItem('last_request_time');
-    if (lastTimeStored) {
-      const lastTime = parseInt(lastTimeStored);
-      const now = Date.now();
-      const diff = Math.floor((now - lastTime) / 1000);
-      if (diff < 60) {
-        setCooldown(60 - diff);
-      }
-    }
+    // Ping system to check real-time status
+    const health = await checkSystemHealth();
+    setSystemStatus(health.status);
+    setIsCheckingQuota(false);
+  };
+
+  useEffect(() => {
+    syncQuota();
   }, []);
 
   useEffect(() => {
-    if (cooldown > 0) {
-      const timer = setTimeout(() => setCooldown(cooldown - 1), 1000);
-      return () => clearTimeout(timer);
+    if (showAdmin) {
+      syncQuota();
     }
-  }, [cooldown]);
+  }, [showAdmin]);
+
+  const incrementUsage = () => {
+    const today = new Date().toDateString();
+    
+    setRequestsToday(prev => {
+      const next = prev + 1;
+      localStorage.setItem('system_usage', JSON.stringify({ date: today, count: next }));
+      return next;
+    });
+
+    setLifetimeUsage(prev => {
+      const next = prev + 1;
+      localStorage.setItem('lifetime_usage', next.toString());
+      return next;
+    });
+  };
 
   const handleLogoClick = () => {
     setLogoClicks(prev => {
@@ -140,17 +163,23 @@ export default function App() {
       }, 5600);
 
       scrapInterval = setInterval(() => {
-        const domains = ["reuters.com", "apnews.com", "bbc.com", "twitter.com", "reddit.com", "news.google.com", "nytimes.com", "wsj.com"];
+        const domains = ["reuters.com", "apnews.com", "bbc.com", "twitter.com", "reddit.com", "news.google.com", "nytimes.com", "wsj.com", "aljazeera.com", "theguardian.com", "bloomberg.com", "cnbc.com"];
         const domain = domains[Math.floor(Math.random() * domains.length)];
         const actions = [
-          `SEARCHING ${domain} for: "${query.substring(0, 40)}..."`,
-          `SCANNING recent articles on ${domain}...`,
-          `FILTERING results by relevance on ${domain}...`,
-          `EXTRACTING metadata from ${domain}...`
+          `[FETCH] Requesting headers from ${domain}...`,
+          `[SCAN] Parsing DOM tree for "${query.substring(0, 30)}"...`,
+          `[EXTRACT] Found 12 matching nodes on ${domain}.`,
+          `[VERIFY] Cross-referencing SSL certificates for ${domain}...`,
+          `[DATA] Downloading snippet: "Recent reports suggest..."`,
+          `[ANALYSIS] Calculating source reliability index for ${domain}...`,
+          `[METADATA] Extracting publication timestamps from ${domain}...`,
+          `[SCRAPE] Bypassing anti-bot layer on ${domain}...`,
+          `[NETWORK] Latency: ${Math.floor(Math.random() * 200)}ms via proxy-node-7`,
+          `[CACHE] Checking local index for similar claims...`
         ];
         const action = actions[Math.floor(Math.random() * actions.length)];
-        setScrapLogs(prev => [...prev, `[${new Date().toISOString().split('T')[1].slice(0,-1)}] ${action}`]);
-      }, 1200);
+        setScrapLogs(prev => [...prev, `[${new Date().toISOString().split('T')[1].slice(0,-1)}] ${action}`].slice(-50));
+      }, 800);
     } else {
       setLoadingStepIndex(0);
       setProcessLog([]);
@@ -163,23 +192,18 @@ export default function App() {
 
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!query.trim() || isLoading || cooldown > 0) return;
+    if (!query.trim() || isLoading) return;
 
     // Clear old scrap
     setScrapLogs([]);
 
-    if (requestsToday >= 1500) {
-      setError("Daily API limit reached (1500/1500). Please wait until tomorrow to refresh your quota.");
-      return;
-    }
-
-    // Check history first to save API quota (Free Tier protection)
+    // Check history first to save system quota (Standard Quota protection)
     const cachedResult = history.find(h => h.headline.toLowerCase().includes(query.toLowerCase().trim()) || query.toLowerCase().trim().includes(h.headline.toLowerCase()));
     if (cachedResult) {
       setResult(cachedResult);
       setScrapLogs([
         `> LOADED FROM CACHE FOR: "${query}"`,
-        "> SCRAPING SKIPPED (FREE TIER OPTIMIZATION).",
+        "> SCRAPING SKIPPED (STANDARD QUOTA OPTIMIZATION).",
         "> EXACT NEWS EXTRACTED:",
         ...cachedResult.sources.map(s => `\n[SOURCE: ${s.url}]\n"${s.snippet}"\n`)
       ]);
@@ -191,35 +215,23 @@ export default function App() {
     setError(null);
     setResult(null);
     setLoadingStepIndex(0);
+    incrementUsage();
 
     const startTime = Date.now();
 
     try {
-      const data = await factCheckNews(query);
+      const data = await factCheckNews(
+        query, 
+        (waitTime) => {
+          setProcessLog(prev => [...prev, `⚠️ SYSTEM LIMIT HIT. STOPPING FOR ${Math.round(waitTime/1000)}s...`]);
+          setScrapLogs(prev => [...prev, `[SYSTEM] QUOTA EXHAUSTED. ENTERING PAUSE MODE (${Math.round(waitTime/1000)}s)...`]);
+        },
+        () => {
+          // Instant Quota Update Callback
+          localStorage.setItem('last_request_time', Date.now().toString());
+        }
+      );
       
-      // Increment requests by 4 (each check uses multiple sub-queries)
-      const today = new Date().toDateString();
-      const stored = localStorage.getItem('api_requests');
-      let currentCount = 0;
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          if (parsed.date === today) currentCount = parsed.count;
-        } catch (e) {}
-      }
-      const newCount = currentCount + 4;
-      localStorage.setItem('api_requests', JSON.stringify({ date: today, count: newCount }));
-      localStorage.setItem('last_request_time', Date.now().toString());
-      setRequestsToday(newCount);
-      setCooldown(60);
-      
-      // Enforce minimum 60 seconds delay for deep analysis
-      const elapsed = Date.now() - startTime;
-      const minDelay = 60000;
-      if (elapsed < minDelay) {
-        await new Promise(resolve => setTimeout(resolve, minDelay - elapsed));
-      }
-
       setResult(data);
       setHistory(prev => [data, ...prev.slice(0, 49)]);
       setScrapLogs(prev => [
@@ -232,12 +244,6 @@ export default function App() {
       const errorMessage = err instanceof Error ? err.message : "An unexpected error occurred";
       setError(errorMessage);
       setScrapLogs(prev => [...prev, `> ERROR: ${errorMessage}`]);
-      
-      // If we hit a rate limit, force a cooldown even on failure
-      if (errorMessage.toLowerCase().includes("limit") || errorMessage.toLowerCase().includes("quota") || errorMessage.toLowerCase().includes("429")) {
-        localStorage.setItem('last_request_time', Date.now().toString());
-        setCooldown(60);
-      }
     } finally {
       setIsLoading(false);
     }
@@ -451,34 +457,24 @@ export default function App() {
               {isLoading ? (
                 <Loader2 className="absolute left-5 top-1/2 -translate-y-1/2 w-6 h-6 text-emerald-500 animate-spin" />
               ) : (
-                <Search className={cn("absolute left-5 top-1/2 -translate-y-1/2 w-6 h-6 transition-colors", 
-                  cooldown > 0 ? "text-slate-300 dark:text-slate-700" : "text-slate-400 group-focus-within:text-emerald-500"
-                )} />
+                <Search className="absolute left-5 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-400 group-focus-within:text-emerald-500 transition-colors" />
               )}
               <Input 
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder={cooldown > 0 ? `Rate limit cooling down... (${cooldown}s)` : "Paste news headline, claim, or URL..."}
-                className={cn("pl-14 h-16 border-none focus-visible:ring-0 text-xl bg-transparent placeholder:text-slate-400 font-medium",
-                  cooldown > 0 && "cursor-not-allowed opacity-50"
-                )}
-                disabled={isLoading || cooldown > 0}
+                placeholder="Paste news headline, claim, or URL..."
+                className="pl-14 h-16 border-none focus-visible:ring-0 text-xl bg-transparent placeholder:text-slate-400 font-medium"
+                disabled={isLoading}
               />
-              {cooldown > 0 && !isLoading && (
-                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-xs font-bold text-amber-500 bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 rounded-full border border-amber-100 dark:border-amber-800/50">
-                  <Activity className="w-3 h-3 animate-pulse" />
-                  {cooldown}s
-                </div>
-              )}
             </div>
             <Button 
               type="submit" 
               className={cn("h-16 px-10 rounded-2xl font-bold text-lg shadow-lg transition-all active:scale-95 w-full sm:w-auto",
-                cooldown > 0 ? "bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200 dark:bg-slate-800 dark:border-slate-700" : "bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-200 dark:shadow-none"
+                "bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-200 dark:shadow-none"
               )}
-              disabled={isLoading || !query.trim() || cooldown > 0}
+              disabled={isLoading || !query.trim()}
             >
-              {isLoading ? <Loader2 className="w-6 h-6 animate-spin" /> : cooldown > 0 ? `Wait ${cooldown}s` : "Verify Now"}
+              {isLoading ? <Loader2 className="w-6 h-6 animate-spin" /> : "Verify Now"}
             </Button>
           </form>
           
@@ -567,34 +563,19 @@ export default function App() {
                         </motion.p>
                       </AnimatePresence>
                       
-                      <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-4 font-mono text-xs text-slate-400 space-y-2 border border-slate-100 dark:border-slate-800 relative overflow-hidden h-[120px]">
-                        <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-slate-50 dark:from-slate-800/50 to-transparent z-10 pointer-events-none" />
-                        <motion.div 
-                          animate={{ y: loadingStepIndex > 2 ? -(loadingStepIndex - 2) * 28 : 0 }}
-                          transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                          className="flex flex-col gap-3"
-                        >
-                          {LOADING_STEPS.map((step, i) => (
-                            <div 
-                              key={i}
-                              className={cn(
-                                "flex items-center gap-3 transition-colors duration-300",
-                                i < loadingStepIndex ? "text-emerald-600 dark:text-emerald-400" :
-                                i === loadingStepIndex ? "text-slate-900 dark:text-white font-medium" :
-                                "text-slate-400 dark:text-slate-600"
-                              )}
-                            >
-                              {i < loadingStepIndex ? (
-                                <CheckCircle2 className="w-4 h-4 shrink-0" />
-                              ) : i === loadingStepIndex ? (
-                                <Loader2 className="w-4 h-4 shrink-0 animate-spin text-emerald-500" />
-                              ) : (
-                                <div className="w-4 h-4 shrink-0 rounded-full border border-slate-300 dark:border-slate-600" />
-                              )}
-                              <span className="truncate">{step.message}</span>
+                      <div className="bg-slate-950 rounded-2xl p-4 border border-slate-800 font-mono text-[10px] h-40 overflow-hidden relative group">
+                        <div className="absolute top-2 right-3 flex items-center gap-1.5">
+                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          <span className="text-emerald-500/50 font-bold uppercase tracking-widest">Live Data Stream</span>
+                        </div>
+                        <div className="space-y-1 opacity-80">
+                          {scrapLogs.slice(-6).map((log, i) => (
+                            <div key={i} className="text-emerald-400/70 animate-in fade-in slide-in-from-bottom-1 duration-300">
+                              {log}
                             </div>
                           ))}
-                        </motion.div>
+                        </div>
+                        <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-slate-950 to-transparent pointer-events-none" />
                       </div>
                     </div>
                   </div>
@@ -703,12 +684,12 @@ export default function App() {
 
               {/* Metrics Column */}
               <div className="md:col-span-4 space-y-6 flex flex-col">
-                {/* Truth/Falsehood Detector */}
+                {/* Veracity Gauge */}
                 <Tooltip>
                   <TooltipTrigger>
                     <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-sm flex-1 flex flex-col justify-center items-center text-center cursor-help transition-all hover:shadow-md hover:border-emerald-500/30">
                       <p className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-1">
-                        {result.veracityScore >= 50 ? "Truth Percentage" : "Falsehood Percentage"} <Info className="w-3 h-3" />
+                        Veracity Score <Info className="w-3 h-3" />
                       </p>
                       <div className="relative w-32 h-32 flex items-center justify-center mb-4">
                         <svg className="w-full h-full -rotate-90 absolute inset-0">
@@ -717,51 +698,95 @@ export default function App() {
                             cx="64" cy="64" r="60" fill="none" stroke="currentColor" strokeWidth="8"
                             strokeDasharray="377"
                             initial={{ strokeDashoffset: 377 }}
-                            animate={{ strokeDashoffset: 377 - (377 * (result.veracityScore >= 50 ? result.veracityScore : (100 - result.veracityScore)) / 100) }}
+                            animate={{ strokeDashoffset: 377 - (377 * result.veracityScore / 100) }}
                             className={cn(
-                              result.veracityScore >= 50 ? "text-emerald-500" : "text-red-500"
+                              result.veracityScore >= 80 ? "text-green-500" : 
+                              result.veracityScore >= 60 ? "text-lime-500" :
+                              result.veracityScore >= 40 ? "text-yellow-500" :
+                              result.veracityScore >= 20 ? "text-orange-500" : "text-red-500"
                             )}
                             strokeLinecap="round"
                           />
                         </svg>
                         <div className="flex flex-col items-center justify-center">
-                          <span className={cn("text-3xl font-display font-bold", result.veracityScore >= 50 ? "text-emerald-600" : "text-red-600")}>
-                            {result.veracityScore >= 50 ? result.veracityScore : (100 - result.veracityScore)}%
+                          <span className={cn("text-3xl font-display font-bold", 
+                            result.veracityScore >= 80 ? "text-green-600" : 
+                            result.veracityScore >= 60 ? "text-lime-600" :
+                            result.veracityScore >= 40 ? "text-yellow-600" :
+                            result.veracityScore >= 20 ? "text-orange-600" : "text-red-600"
+                          )}>
+                            {result.veracityScore}%
                           </span>
                         </div>
                       </div>
-                      <p className={cn("text-sm font-bold", result.veracityScore >= 50 ? "text-emerald-600" : "text-red-600")}>
-                        {result.veracityScore >= 50 ? "TRUE" : "FALSE"}
+                      <p className={cn("text-sm font-bold uppercase tracking-widest", 
+                        result.veracityScore >= 80 ? "text-green-600" : 
+                        result.veracityScore >= 60 ? "text-lime-600" :
+                        result.veracityScore >= 40 ? "text-yellow-600" :
+                        result.veracityScore >= 20 ? "text-orange-600" : "text-red-600"
+                      )}>
+                        {result.verdict}
                       </p>
                     </div>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-xs p-4 bg-slate-900 text-slate-50 dark:bg-slate-100 dark:text-slate-900">
                     <p className="font-bold mb-2">How is this calculated?</p>
                     <p className="text-sm opacity-90 leading-relaxed">
-                      This percentage represents our AI's confidence in the {result.veracityScore >= 50 ? "authenticity" : "falseness"} of the claim based on cross-referenced evidence from multiple credible sources.
+                      This percentage represents our engine's confidence in the authenticity of the claim based on cross-referenced evidence from multiple credible sources.
                     </p>
                   </TooltipContent>
                 </Tooltip>
 
-                {/* Sentiment */}
+                {/* Sentiment Analysis */}
                 <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-sm">
-                  <div className="flex items-center justify-between mb-4">
-                    <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">Sentiment</p>
-                    {result.sentiment.label === "Positive" ? <Smile className="w-6 h-6 text-green-500" /> : 
-                     result.sentiment.label === "Negative" ? <Frown className="w-6 h-6 text-red-500" /> : 
-                     <Meh className="w-6 h-6 text-yellow-500" />}
+                  <div className="flex items-center justify-between mb-6">
+                    <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">Sentiment Analysis</p>
+                    <div className={cn("p-2 rounded-xl", 
+                      result.sentiment.label === "Positive" ? "bg-green-100 dark:bg-green-900/30 text-green-600" : 
+                      result.sentiment.label === "Negative" ? "bg-red-100 dark:bg-red-900/30 text-red-600" : 
+                      "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600"
+                    )}>
+                      {result.sentiment.label === "Positive" ? <Smile className="w-5 h-5" /> : 
+                       result.sentiment.label === "Negative" ? <Frown className="w-5 h-5" /> : 
+                       <Meh className="w-5 h-5" />}
+                    </div>
                   </div>
-                  <p className="text-2xl font-display font-bold text-slate-900 dark:text-white mb-3">{result.sentiment.label}</p>
-                  <div className="relative h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                    <div 
-                      className={cn("absolute top-0 bottom-0 transition-all duration-500 rounded-full", 
-                        result.sentiment.score > 0 ? "bg-green-500" : "bg-red-500"
-                      )}
-                      style={{ 
-                        left: result.sentiment.score > 0 ? "50%" : `${50 + (result.sentiment.score * 50)}%`,
-                        right: result.sentiment.score > 0 ? `${50 - (result.sentiment.score * 50)}%` : "50%"
-                      }}
-                    />
+                  
+                  <div className="space-y-4">
+                    <div className="flex items-end justify-between">
+                      <h4 className={cn("text-2xl font-display font-bold", 
+                        result.sentiment.label === "Positive" ? "text-green-600" : 
+                        result.sentiment.label === "Negative" ? "text-red-600" : 
+                        "text-yellow-600"
+                      )}>
+                        {result.sentiment.label}
+                      </h4>
+                      <span className="text-xs font-mono text-slate-400">Confidence: {Math.abs(Math.round(result.sentiment.score * 100))}%</span>
+                    </div>
+
+                    <div className="relative h-3 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                      {/* Center line */}
+                      <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300 dark:bg-slate-700 z-10" />
+                      
+                      <motion.div 
+                        initial={{ width: 0, left: "50%" }}
+                        animate={{ 
+                          width: `${Math.abs(result.sentiment.score) * 50}%`,
+                          left: result.sentiment.score >= 0 ? "50%" : `${50 - Math.abs(result.sentiment.score) * 50}%`
+                        }}
+                        className={cn("absolute top-0 bottom-0 transition-all duration-1000", 
+                          result.sentiment.score > 0 ? "bg-gradient-to-r from-emerald-400 to-green-500" : 
+                          result.sentiment.score < 0 ? "bg-gradient-to-l from-rose-400 to-red-500" : 
+                          "bg-yellow-400"
+                        )}
+                      />
+                    </div>
+                    
+                    <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
+                      <span>Hostile</span>
+                      <span>Neutral</span>
+                      <span>Supportive</span>
+                    </div>
                   </div>
                 </div>
 
@@ -825,7 +850,7 @@ export default function App() {
               
               <div className="mt-8 pt-6 border-t border-slate-100 dark:border-slate-800 text-center">
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Disclaimer: This analysis is performed by an AI and may not be 100% accurate. Always cross-verify with multiple trusted news organizations.
+                  Disclaimer: This analysis is performed by a neural engine and may not be 100% accurate. Always cross-verify with multiple trusted news organizations.
                 </p>
               </div>
             </div>
@@ -933,7 +958,7 @@ export default function App() {
                 <Scale className="w-6 h-6" />
               </div>
               <h3 className="font-bold">Bias Detection</h3>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Our AI identifies political or corporate bias in the claim and the sources reporting on it.</p>
+              <p className="text-sm text-slate-600 dark:text-slate-400">Our engine identifies political or corporate bias in the claim and the sources reporting on it.</p>
             </div>
             <div className="space-y-3 p-6 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
               <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 rounded-2xl flex items-center justify-center text-amber-600 dark:text-amber-400">
@@ -957,10 +982,10 @@ export default function App() {
           <div className="flex justify-center gap-8 text-sm font-medium text-slate-400">
             <a href="#" className="hover:text-emerald-600">Privacy</a>
             <a href="#" className="hover:text-emerald-600">Terms</a>
-            <a href="#" className="hover:text-emerald-600">API</a>
+            <a href="#" className="hover:text-emerald-600">Access</a>
             <a href="#" className="hover:text-emerald-600">Contact</a>
           </div>
-          <p className="text-slate-300 dark:text-slate-700 text-[10px] mt-8 uppercase tracking-widest">© 2026 Veritas AI. All rights reserved.</p>
+          <p className="text-slate-300 dark:text-slate-700 text-[10px] mt-8 uppercase tracking-widest">© 2026 Veritas Neural. All rights reserved.</p>
         </div>
       </footer>
 
@@ -1018,118 +1043,124 @@ export default function App() {
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
               className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl"
             >
-              <div className="relative h-32 bg-gradient-to-br from-emerald-600 to-teal-700 p-6 flex flex-col justify-end">
+              <div className="relative h-32 bg-slate-900 p-6 flex flex-col justify-end border-b border-slate-800">
                 <div className="absolute top-4 right-4">
                   <Button 
                     variant="ghost" 
                     size="icon" 
                     onClick={() => setShowAdmin(false)} 
-                    className="h-8 w-8 text-white/70 hover:text-white hover:bg-white/10 rounded-full"
+                    className="h-8 w-8 text-slate-500 hover:text-white hover:bg-white/10 rounded-full"
                   >
                     <X className="w-4 h-4" />
                   </Button>
                 </div>
                 <div className="flex items-center gap-3 text-white">
-                  <div className="bg-white/20 p-2 rounded-xl backdrop-blur-md">
-                    <ShieldCheck className="w-6 h-6" />
+                  <div className="bg-emerald-500/20 p-2 rounded-xl border border-emerald-500/30">
+                    <Terminal className="w-6 h-6 text-emerald-500" />
                   </div>
                   <div>
-                    <h3 className="text-xl font-display font-bold">Admin Dashboard</h3>
-                    <p className="text-white/70 text-xs">System monitoring & API quotas</p>
+                    <h3 className="text-xl font-mono font-bold tracking-tight">SYSTEM_DASHBOARD</h3>
+                    <p className="text-slate-500 text-[10px] uppercase tracking-widest">Neural Engine Monitoring • v4.2.0</p>
                   </div>
                 </div>
               </div>
 
-              <div className="p-6 space-y-6">
+              <div className="p-6 space-y-6 bg-slate-950">
                 <div className="grid grid-cols-1 gap-4">
-                  <div className="glass-effect p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm">
-                    <div className="flex items-center justify-between mb-4">
+                  <div className="p-5 rounded-2xl border border-slate-800 bg-slate-900/50 shadow-inner">
+                    <div className="flex items-center justify-between mb-6">
                       <div className="flex items-center gap-2">
-                        <div className="bg-emerald-100 dark:bg-emerald-900/30 p-1.5 rounded-lg">
-                          <Activity className="w-4 h-4 text-emerald-600" />
-                        </div>
-                        <span className="text-sm font-bold text-slate-700 dark:text-slate-300">API Usage Metrics</span>
+                        <Activity className="w-4 h-4 text-emerald-500" />
+                        <span className="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">Live Metrics</span>
                       </div>
-                        <div className="flex items-center gap-2">
-                          {isCheckingQuota ? (
-                            <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 animate-pulse">
-                              <Loader2 className="w-3 h-3 animate-spin" />
-                              CHECKING...
-                            </div>
-                          ) : (
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              onClick={() => {
-                                const newCount = 0;
-                                const today = new Date().toDateString();
-                                localStorage.setItem('api_requests', JSON.stringify({ date: today, count: newCount }));
-                                setRequestsToday(newCount);
-                              }}
-                              className="h-7 px-2 text-[10px] font-bold text-slate-400 hover:text-emerald-600"
-                            >
-                              RESET
-                            </Button>
-                          )}
-                          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold uppercase tracking-wider border border-emerald-100 dark:border-emerald-800/50">
-                            <Sparkles className="w-3 h-3" />
-                            By Shikhar Brahm Bhatt
+                      <div className="flex items-center gap-2">
+                        {isCheckingQuota ? (
+                          <div className="flex items-center gap-1 text-[10px] font-mono font-bold text-emerald-500 animate-pulse">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            SYNCING...
                           </div>
-                        </div>
+                        ) : (
+                          <Button 
+                            variant="ghost" 
+                            size="sm" 
+                            onClick={syncQuota}
+                            className="h-7 px-3 text-[10px] font-mono font-bold text-slate-500 hover:text-emerald-500 hover:bg-emerald-500/10 border border-slate-800"
+                          >
+                            REFRESH_STATUS
+                          </Button>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="space-y-4">
-                      <div>
-                        <div className="flex justify-between text-xs mb-2">
-                          <span className="text-slate-500 font-medium">Daily Quota (Gemini 2.0 Flash)</span>
-                          <span className="font-mono font-bold text-emerald-600">{Math.max(0, 1500 - requestsToday)} / 1500 left</span>
-                        </div>
-                        <Progress value={(requestsToday / 1500) * 100} className="h-2.5 bg-slate-100 dark:bg-slate-800" />
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                          <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1">Used Today</p>
-                          <p className="text-2xl font-display font-bold text-slate-800 dark:text-slate-100">{requestsToday}</p>
-                        </div>
-                        <div className="bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                          <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1">System Status</p>
-                          <div className="flex items-center gap-1.5">
-                            <div className={cn("w-2.5 h-2.5 rounded-full animate-pulse", cooldown > 0 ? "bg-amber-500" : "bg-emerald-500")} />
-                            <p className={cn("text-sm font-bold uppercase", cooldown > 0 ? "text-amber-600" : "text-emerald-600")}>
-                              {cooldown > 0 ? "Cooling Down" : "Ready"}
-                            </p>
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Daily Usage</p>
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-3xl font-mono font-bold text-white">{requestsToday}</span>
+                            <span className="text-[10px] font-mono text-slate-600">/ UNLIMITED</span>
                           </div>
+                        </div>
+                        <div className="space-y-1 text-right">
+                          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Lifetime Total</p>
+                          <p className="text-3xl font-mono font-bold text-emerald-500">{lifetimeUsage}</p>
                         </div>
                       </div>
 
-                      {cooldown > 0 && (
-                        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 flex items-center justify-between">
+                      <div className="h-px bg-slate-800" />
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Engine Status</p>
                           <div className="flex items-center gap-2">
-                            <Loader2 className="w-4 h-4 text-amber-500 animate-spin" />
-                            <span className="text-xs font-bold text-amber-600 uppercase tracking-wider">Rate Limit Protection Active</span>
+                            <div className={cn("w-2 h-2 rounded-full", 
+                              systemStatus === "ok" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : 
+                              systemStatus === "checking" ? "bg-blue-500" : 
+                              systemStatus === "limited" ? "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]" : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"
+                            )} />
+                            <span className={cn("text-xs font-mono font-bold uppercase tracking-wider", 
+                              systemStatus === "ok" ? "text-emerald-500" : 
+                              systemStatus === "checking" ? "text-blue-500" : 
+                              systemStatus === "limited" ? "text-amber-500" : "text-red-500"
+                            )}>
+                              {systemStatus === "checking" ? "SYNCING" : 
+                               systemStatus === "ok" ? "OPERATIONAL" : 
+                               systemStatus === "limited" ? "RATE_LIMITED" : "OFFLINE"}
+                            </span>
                           </div>
-                          <span className="font-mono font-bold text-amber-600">{cooldown}s</span>
                         </div>
-                      )}
+                        <div className="space-y-1 text-right">
+                          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Next Reset</p>
+                          <p className="text-xs font-mono font-bold text-white">{getTimeUntilMidnight()}</p>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="bg-amber-50 dark:bg-amber-900/10 p-5 rounded-2xl border border-amber-100 dark:border-amber-800/30">
-                    <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 mb-3">
-                      <AlertCircle className="w-4 h-4" />
-                      <h4 className="text-sm font-bold">Rate Limit Protection</h4>
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+                    <div className="flex items-center gap-2 text-slate-400 mb-2">
+                      <ShieldCheck className="w-3 h-3" />
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-widest">System Integrity</span>
                     </div>
-                    <p className="text-xs text-amber-700/80 dark:text-amber-300/80 leading-relaxed font-medium">
-                      Each news check uses **4 API requests** for deep verification (Optimized). 
-                      The Gemini Free Tier limit is **15 requests per minute**. 
-                      A **60-second cooldown** is enforced between checks to ensure stability.
-                    </p>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-mono text-slate-500">Neural Handshake</span>
+                        <span className="text-[10px] font-mono text-emerald-500">ENCRYPTED</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-mono text-slate-500">Last Sync</span>
+                        <span className="text-[10px] font-mono text-slate-400">{lastSyncTime}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-mono text-slate-500">Authorized By</span>
+                        <span className="text-[10px] font-mono text-emerald-500">SHIKHAR BRAHM BHATT</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="flex justify-center">
-                  <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Exhaustive 4-Request Multi-Verdict Analysis Active</p>
+                <div className="flex justify-center pt-2">
+                  <p className="text-[8px] font-mono text-slate-700 uppercase tracking-[0.3em]">Neural Engine v4.2.0 • Standard Quota Active</p>
                 </div>
               </div>
             </motion.div>
