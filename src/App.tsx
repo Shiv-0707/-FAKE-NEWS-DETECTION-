@@ -41,6 +41,32 @@ export default function App() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [requestsToday, setRequestsToday] = useState(0);
   const [cooldown, setCooldown] = useState(0);
+  const [isCheckingQuota, setIsCheckingQuota] = useState(false);
+
+  useEffect(() => {
+    if (showAdmin) {
+      setIsCheckingQuota(true);
+      // Simulate a real-time sync with the server/storage
+      const timer = setTimeout(() => {
+        const today = new Date().toDateString();
+        const stored = localStorage.getItem('api_requests');
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (parsed.date === today) {
+              setRequestsToday(parsed.count);
+            } else {
+              setRequestsToday(0);
+            }
+          } catch (e) {
+            setRequestsToday(0);
+          }
+        }
+        setIsCheckingQuota(false);
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+  }, [showAdmin]);
 
   useEffect(() => {
     const today = new Date().toDateString();
@@ -171,7 +197,7 @@ export default function App() {
     try {
       const data = await factCheckNews(query);
       
-      // Increment requests by 10
+      // Increment requests by 6 (each check uses multiple sub-queries)
       const today = new Date().toDateString();
       const stored = localStorage.getItem('api_requests');
       let currentCount = 0;
@@ -1024,10 +1050,32 @@ export default function App() {
                         </div>
                         <span className="text-sm font-bold text-slate-700 dark:text-slate-300">API Usage Metrics</span>
                       </div>
-                      <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold uppercase tracking-wider border border-emerald-100 dark:border-emerald-800/50">
-                        <Sparkles className="w-3 h-3" />
-                        By Shikhar Brahm Bhatt
-                      </div>
+                        <div className="flex items-center gap-2">
+                          {isCheckingQuota ? (
+                            <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 animate-pulse">
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              CHECKING...
+                            </div>
+                          ) : (
+                            <Button 
+                              variant="ghost" 
+                              size="sm" 
+                              onClick={() => {
+                                const newCount = 0;
+                                const today = new Date().toDateString();
+                                localStorage.setItem('api_requests', JSON.stringify({ date: today, count: newCount }));
+                                setRequestsToday(newCount);
+                              }}
+                              className="h-7 px-2 text-[10px] font-bold text-slate-400 hover:text-emerald-600"
+                            >
+                              RESET
+                            </Button>
+                          )}
+                          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold uppercase tracking-wider border border-emerald-100 dark:border-emerald-800/50">
+                            <Sparkles className="w-3 h-3" />
+                            By Shikhar Brahm Bhatt
+                          </div>
+                        </div>
                     </div>
 
                     <div className="space-y-4">
