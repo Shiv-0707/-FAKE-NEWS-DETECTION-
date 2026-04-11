@@ -197,7 +197,7 @@ export default function App() {
     try {
       const data = await factCheckNews(query);
       
-      // Increment requests by 6 (each check uses multiple sub-queries)
+      // Increment requests by 4 (each check uses multiple sub-queries)
       const today = new Date().toDateString();
       const stored = localStorage.getItem('api_requests');
       let currentCount = 0;
@@ -207,7 +207,7 @@ export default function App() {
           if (parsed.date === today) currentCount = parsed.count;
         } catch (e) {}
       }
-      const newCount = currentCount + 6;
+      const newCount = currentCount + 4;
       localStorage.setItem('api_requests', JSON.stringify({ date: today, count: newCount }));
       localStorage.setItem('last_request_time', Date.now().toString());
       setRequestsToday(newCount);
@@ -1093,13 +1093,25 @@ export default function App() {
                           <p className="text-2xl font-display font-bold text-slate-800 dark:text-slate-100">{requestsToday}</p>
                         </div>
                         <div className="bg-slate-50 dark:bg-slate-950/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                          <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1">Status</p>
+                          <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mb-1">System Status</p>
                           <div className="flex items-center gap-1.5">
-                            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                            <p className="text-sm font-bold text-emerald-600 uppercase">Active</p>
+                            <div className={cn("w-2.5 h-2.5 rounded-full animate-pulse", cooldown > 0 ? "bg-amber-500" : "bg-emerald-500")} />
+                            <p className={cn("text-sm font-bold uppercase", cooldown > 0 ? "text-amber-600" : "text-emerald-600")}>
+                              {cooldown > 0 ? "Cooling Down" : "Ready"}
+                            </p>
                           </div>
                         </div>
                       </div>
+
+                      {cooldown > 0 && (
+                        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 text-amber-500 animate-spin" />
+                            <span className="text-xs font-bold text-amber-600 uppercase tracking-wider">Rate Limit Protection Active</span>
+                          </div>
+                          <span className="font-mono font-bold text-amber-600">{cooldown}s</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1109,7 +1121,7 @@ export default function App() {
                       <h4 className="text-sm font-bold">Rate Limit Protection</h4>
                     </div>
                     <p className="text-xs text-amber-700/80 dark:text-amber-300/80 leading-relaxed font-medium">
-                      Each news check uses **6 API requests** for deep verification (Optimized). 
+                      Each news check uses **4 API requests** for deep verification (Optimized). 
                       The Gemini Free Tier limit is **15 requests per minute**. 
                       A **60-second cooldown** is enforced between checks to ensure stability.
                     </p>
@@ -1117,7 +1129,7 @@ export default function App() {
                 </div>
 
                 <div className="flex justify-center">
-                  <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Exhaustive 6-Request Multi-Verdict Analysis Active</p>
+                  <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Exhaustive 4-Request Multi-Verdict Analysis Active</p>
                 </div>
               </div>
             </motion.div>

@@ -27,6 +27,10 @@ export interface FactCheckResult {
 }
 
 export async function factCheckNews(claim: string): Promise<FactCheckResult> {
+  if (!process.env.GEMINI_API_KEY && !(import.meta as any).env.VITE_GEMINI_API_KEY) {
+    throw new Error("Gemini API Key is missing. Please check your .env file.");
+  }
+  
   const rawData: string[] = [];
   const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -79,8 +83,8 @@ export async function factCheckNews(claim: string): Promise<FactCheckResult> {
     const allQuestions = initialData.questions;
     await delay(5000);
 
-    // Steps 2-4: Deep Investigations (Reduced to 3 high-impact requests)
-    for (let i = 0; i < 3; i++) {
+    // Steps 2-3: Deep Investigations (Reduced to 2 high-impact requests to save quota)
+    for (let i = 0; i < 2; i++) {
       const q = allQuestions[i] || allQuestions[0];
       const searchResponse = await callWithRetry(() => ai.models.generateContent({
         model: "gemini-2.0-flash",
@@ -88,24 +92,21 @@ export async function factCheckNews(claim: string): Promise<FactCheckResult> {
         config: { tools: [{ googleSearch: {} }], temperature: 0 }
       }));
       rawData.push(`Investigation ${i+1}: ${searchResponse.text}`);
-      await delay(5000);
+      await delay(7000); // Increased delay to stay under 15 requests/min
     }
 
-    // Step 5: Synthesis & Contradiction Check
-    const synthesisResponse = await callWithRetry(() => ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: `Analyze all gathered evidence for contradictions, bias, and missing links:
-      ${rawData.join("\n\n")}`,
-      config: { temperature: 0 }
-    }));
-    await delay(5000);
-
-    // Step 6: Final Report Generation
+    // Step 4: Synthesis & Final Report Generation (Combined into one call)
     const finalResponse = await callWithRetry(() => ai.models.generateContent({
       model: "gemini-2.0-flash",
       contents: `Generate the final Veritas Fact-Check Report for: "${claim}".
-      Evidence: ${rawData.join("\n")}
-      Synthesis: ${synthesisResponse.text}`,
+      
+      Gathered Evidence:
+      ${rawData.join("\n\n")}
+      
+      Task:
+      1. Analyze all evidence for contradictions, bias, and missing links.
+      2. Synthesize a final verdict.
+      3. Provide the report in the required JSON format.`,
       config: {
         temperature: 0,
         responseMimeType: "application/json",
