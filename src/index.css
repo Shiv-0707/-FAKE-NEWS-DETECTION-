@@ -16,7 +16,32 @@
 
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-900 font-sans antialiased;
+    @apply bg-slate-50 text-slate-900 font-sans antialiased selection:bg-emerald-100 selection:text-emerald-900;
+  }
+  
+  .dark body {
+    @apply bg-slate-950 text-slate-50 selection:bg-emerald-900/30 selection:text-emerald-400;
+  }
+}
+
+@layer utilities {
+  .bg-grid-pattern {
+    background-image: radial-gradient(circle at 1px 1px, currentColor 0.1px, transparent 0);
+    background-size: 24px 24px;
+  }
+  
+  .glass-effect {
+    @apply bg-white/70 dark:bg-slate-900/70 backdrop-blur-xl border border-slate-200/50 dark:border-slate-800/50;
+  }
+
+  .animate-gradient {
+    animation: gradient 8s linear infinite;
+  }
+
+  @keyframes gradient {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
   }
 }
 

@@ -3,6 +3,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export interface FactCheckResult {
+  reasoningProcess: string;
   headline: string;
   veracityScore: number; // 0 to 100
   verdict: "True" | "Mostly True" | "Mixed" | "Mostly False" | "False" | "Unverified";
@@ -26,80 +27,123 @@ export interface FactCheckResult {
 }
 
 export async function factCheckNews(claim: string): Promise<FactCheckResult> {
-  const makeApiCall = async (useSearch: boolean) => {
-    return await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Fact check the following news claim, analyze its sentiment/tone, and identify potential bias: "${claim}"`,
-      config: {
-        ...(useSearch ? { tools: [{ googleSearch: {} }] } : {}),
+  const rawData: string[] = [];
+  const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+  async function callWithRetry(fn: () => Promise<any>, maxRetries = 3): Promise<any> {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn();
+      } catch (error: any) {
+        const errorMsg = error?.message || "";
+        const isRateLimit = error?.status === 429 || 
+                          errorMsg.toLowerCase().includes("quota") || 
+                          errorMsg.toLowerCase().includes("limit") ||
+                          errorMsg.includes("429");
+        
+        if (isRateLimit && i < maxRetries - 1) {
+          const waitTime = Math.pow(2, i) * 15000 + Math.random() * 2000; // 15s, 30s, 60s...
+          console.warn(`Rate limit hit, retrying in ${Math.round(waitTime/1000)}s... (Attempt ${i + 1}/${maxRetries})`);
+          await delay(waitTime);
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  try {
+    // Step 1: Initial Research & Strategy (Combined)
+    const initialResponse = await callWithRetry(() => ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: `Exhaustively research this claim: "${claim}". 
+      1. Find credible sources and official records.
+      2. Identify 6 critical research questions (3 to prove it TRUE, 3 to prove it FALSE).`,
+      config: { 
+        tools: [{ googleSearch: {} }], 
+        temperature: 0,
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            headline: { type: Type.STRING },
-            veracityScore: { type: Type.NUMBER, description: "A score from 0 to 100 where 100 is completely true." },
-            verdict: { 
-              type: Type.STRING, 
-              enum: ["True", "Mostly True", "Mixed", "Mostly False", "False", "Unverified"] 
-            },
-            summary: { type: Type.STRING, description: "A brief summary of the fact-check findings." },
-            detailedAnalysis: { type: Type.STRING, description: "A detailed breakdown of why this verdict was reached." },
-            sentiment: {
-              type: Type.OBJECT,
-              properties: {
-                score: { type: Type.NUMBER, description: "Sentiment score from -1 (very negative) to 1 (very positive)." },
-                label: { type: Type.STRING, enum: ["Positive", "Neutral", "Negative"] }
-              },
-              required: ["score", "label"]
-            },
-            tone: { type: Type.STRING, description: "Description of the linguistic tone (e.g., sensationalist, objective, alarmist)." },
-            biasAnalysis: {
-              type: Type.OBJECT,
-              properties: {
-                label: { type: Type.STRING, description: "The identified political or corporate bias." },
-                description: { type: Type.STRING, description: "Explanation of why this bias was identified." }
-              },
-              required: ["label", "description"]
-            },
-            sources: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  url: { type: Type.STRING },
-                  snippet: { type: Type.STRING },
-                  credibility: { type: Type.STRING, enum: ["High", "Medium", "Low", "Unknown"] }
-                },
-                required: ["title", "url", "snippet", "credibility"]
-              }
-            }
+            sources: { type: Type.STRING },
+            questions: { type: Type.ARRAY, items: { type: Type.STRING } }
           },
-          required: ["headline", "veracityScore", "verdict", "summary", "detailedAnalysis", "sentiment", "tone", "biasAnalysis", "sources"]
-        },
-        systemInstruction: "You are a professional fact-checker, linguistic analyst, and media bias expert. Use Google Search to find the latest information about the provided news claim. Be objective, thorough, and cite your sources. Analyze sentiment, tone, and identify any political or corporate bias. Rate each source's credibility based on established journalistic standards. For each source, provide a relevant 'snippet' of text that supports the fact-check."
+          required: ["sources", "questions"]
+        }
       }
-    });
-  };
+    }));
+    
+    const initialData = JSON.parse(initialResponse.text || '{"sources":"","questions":[]}');
+    rawData.push(`Initial Research: ${initialData.sources}`);
+    const allQuestions = initialData.questions;
+    await delay(5000);
 
-  try {
-    let response;
-    try {
-      // First try with Google Search grounding
-      response = await makeApiCall(true);
-    } catch (searchError: any) {
-      console.warn("API call with search failed, retrying without search...", searchError);
-      // Fallback to without search if the free tier restricts it
-      response = await makeApiCall(false);
+    // Steps 2-4: Deep Investigations (Reduced to 3 high-impact requests)
+    for (let i = 0; i < 3; i++) {
+      const q = allQuestions[i] || allQuestions[0];
+      const searchResponse = await callWithRetry(() => ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: `Deep dive investigation: "${q}". Cross-reference multiple sources and look for contradictions.`,
+        config: { tools: [{ googleSearch: {} }], temperature: 0 }
+      }));
+      rawData.push(`Investigation ${i+1}: ${searchResponse.text}`);
+      await delay(5000);
     }
 
-    const result = JSON.parse(response.text || "{}");
-    return result as FactCheckResult;
+    // Step 5: Synthesis & Contradiction Check
+    const synthesisResponse = await callWithRetry(() => ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: `Analyze all gathered evidence for contradictions, bias, and missing links:
+      ${rawData.join("\n\n")}`,
+      config: { temperature: 0 }
+    }));
+    await delay(5000);
+
+    // Step 6: Final Report Generation
+    const finalResponse = await callWithRetry(() => ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: `Generate the final Veritas Fact-Check Report for: "${claim}".
+      Evidence: ${rawData.join("\n")}
+      Synthesis: ${synthesisResponse.text}`,
+      config: {
+        temperature: 0,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            reasoningProcess: { type: Type.STRING },
+            headline: { type: Type.STRING },
+            veracityScore: { type: Type.NUMBER },
+            verdict: { type: Type.STRING, enum: ["True", "Mostly True", "Mixed", "Mostly False", "False", "Unverified"] },
+            summary: { type: Type.STRING },
+            detailedAnalysis: { type: Type.STRING },
+            sentiment: { type: Type.OBJECT, properties: { score: { type: Type.NUMBER }, label: { type: Type.STRING } }, required: ["score", "label"] },
+            tone: { type: Type.STRING },
+            biasAnalysis: { type: Type.OBJECT, properties: { label: { type: Type.STRING }, description: { type: Type.STRING } }, required: ["label", "description"] },
+            sources: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { title: { type: Type.STRING }, url: { type: Type.STRING }, snippet: { type: Type.STRING }, credibility: { type: Type.STRING } }, required: ["title", "url", "snippet", "credibility"] } }
+          },
+          required: ["reasoningProcess", "headline", "veracityScore", "verdict", "summary", "detailedAnalysis", "sentiment", "tone", "biasAnalysis", "sources"]
+        },
+        systemInstruction: "You are an elite investigative journalist. Provide an extremely precise, evidence-based report."
+      }
+    }));
+
+    return JSON.parse(finalResponse.text || "{}") as FactCheckResult;
   } catch (error: any) {
     console.error("Gemini API Error:", error);
-    if (error?.status === 429) {
-      throw new Error("Free API rate limit exceeded. Please wait a moment and try again.");
+    let errorMsg = error?.message || "Failed to analyze the news.";
+    
+    if (errorMsg.includes("{")) {
+      try {
+        const parsed = JSON.parse(errorMsg.substring(errorMsg.indexOf("{")));
+        if (parsed.error?.message) errorMsg = parsed.error.message;
+      } catch (e) {}
     }
-    throw new Error(error?.message || "Failed to analyze the news. Please try again.");
+
+    if (error?.status === 429 || errorMsg.toLowerCase().includes("quota") || errorMsg.toLowerCase().includes("limit")) {
+      throw new Error("API Quota Exhausted: The Free Tier limit (15 requests/min) has been reached. Please wait 60 seconds for the system to reset.");
+    }
+    throw new Error(errorMsg);
   }
 }
