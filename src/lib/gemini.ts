@@ -7,8 +7,6 @@ function getAiClient(): GoogleGenAI {
     const key = process.env.GEMINI_API_KEY || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
     
     // Masked log for debugging
-    const masked = key ? `${key.substring(0, 4)}...${key.substring(key.length - 4)}` : "EMPTY";
-    console.log(`Frontend getAiClient called. Key found: ${masked}`);
 
     if (!key || key === "MY_GEMINI_API_KEY" || key.includes("TODO")) {
       throw new Error("Veritas Access Key (GEMINI_API_KEY) is missing. Please configure it in the Settings menu.");
@@ -81,8 +79,8 @@ export async function factCheckNews(
                           errorMsg.includes("429");
         
         if (isRateLimit && i < maxRetries - 1) {
-          const waitTime = 62000; 
-          console.warn(`Rate limit hit. System will STOP and wait for 62s before continuing... (Attempt ${i + 1}/${maxRetries})`);
+          const waitTime = 10000; 
+          console.warn(`Rate limit hit. System will STOP and wait for 10s before continuing... (Attempt ${i + 1}/${maxRetries})`);
           if (onRetry) onRetry(waitTime);
           await delay(waitTime);
           continue;
@@ -151,7 +149,7 @@ export async function factCheckNews(
     let errorMsg = error?.message || "Failed to analyze the news.";
     
     if (errorMsg.toLowerCase().includes("quota") || errorMsg.toLowerCase().includes("limit") || errorMsg.includes("429")) {
-      throw new Error(`System Busy: Quota reached. Please wait a moment and try again.`);
+      throw new Error(`System Busy: Rate limit reached. Please wait a few seconds and try again.`);
     }
     throw new Error(errorMsg);
   }

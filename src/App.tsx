@@ -37,6 +37,8 @@ export default function App() {
   const [filterBias, setFilterBias] = useState<string>("All");
   const [showScrap, setShowScrap] = useState(false);
   const [scrapLogs, setScrapLogs] = useState<string[]>([]);
+  const [progress, setProgress] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(15);
   const [logoClicks, setLogoClicks] = useState(0);
   const [showAdmin, setShowAdmin] = useState(false);
   const [requestsToday, setRequestsToday] = useState(0);
@@ -67,6 +69,18 @@ export default function App() {
     window.addEventListener("unhandledrejection", handleUnhandledRejection);
     return () => window.removeEventListener("unhandledrejection", handleUnhandledRejection);
   }, []);
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (isLoading && timeLeft > 0) {
+      timer = setInterval(() => {
+        setTimeLeft((prev) => prev - 1);
+      }, 1000);
+    } else if (!isLoading) {
+      setTimeLeft(15);
+    }
+    return () => clearInterval(timer);
+  }, [isLoading, timeLeft]);
 
   const syncQuota = async () => {
     setIsCheckingQuota(true);
@@ -179,10 +193,12 @@ export default function App() {
         ];
         const action = actions[Math.floor(Math.random() * actions.length)];
         setScrapLogs(prev => [...prev, `[${new Date().toISOString().split('T')[1].slice(0,-1)}] ${action}`].slice(-50));
+        setProgress(prev => Math.min(prev + 2, 95));
       }, 800);
     } else {
       setLoadingStepIndex(0);
       setProcessLog([]);
+      setProgress(0);
     }
     return () => {
       clearInterval(interval);
@@ -361,9 +377,9 @@ export default function App() {
                     {React.createElement(LOADING_STEPS[loadingStepIndex].icon, { className: "w-4 h-4 animate-spin" })}
                     {LOADING_STEPS[loadingStepIndex].message}
                   </span>
-                  <span className="text-slate-400">{Math.round((loadingStepIndex / LOADING_STEPS.length) * 100)}%</span>
+                  <span className="text-slate-400">{Math.round(progress)}%</span>
                 </div>
-                <Progress value={(loadingStepIndex / LOADING_STEPS.length) * 100} className="h-2" />
+                <Progress value={progress} className="h-2" />
               </div>
 
               <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-xl border border-slate-100 dark:border-slate-800 text-left">
@@ -566,7 +582,9 @@ export default function App() {
                       <div className="bg-slate-950 rounded-2xl p-4 border border-slate-800 font-mono text-[10px] h-40 overflow-hidden relative group">
                         <div className="absolute top-2 right-3 flex items-center gap-1.5">
                           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                          <span className="text-emerald-500/50 font-bold uppercase tracking-widest">Live Data Stream</span>
+                          <span className="text-emerald-500/50 font-bold uppercase tracking-widest">
+                            {timeLeft > 0 ? `Est. ${timeLeft}s remaining` : "Finalizing..."}
+                          </span>
                         </div>
                         <div className="space-y-1 opacity-80">
                           {scrapLogs.slice(-6).map((log, i) => (
