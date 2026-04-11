@@ -47,6 +47,16 @@ export default function App() {
   const [systemStatus, setSystemStatus] = useState<"ok" | "blocked" | "limited" | "checking">("checking");
   const [lastSyncTime, setLastSyncTime] = useState<string>("");
 
+  useEffect(() => {
+    // Automatically clear usage-related cache on startup to prevent rate-limit issues
+    if (!sessionStorage.getItem('cache_reset_done')) {
+      localStorage.removeItem('system_usage');
+      localStorage.removeItem('lifetime_usage');
+      sessionStorage.setItem('cache_reset_done', 'true');
+      console.log("Usage cache cleared on startup.");
+    }
+  }, []);
+
   const getTimeUntilMidnight = () => {
     const now = new Date();
     const midnight = new Date(now);
@@ -162,7 +172,7 @@ export default function App() {
     let interval: NodeJS.Timeout;
     let scrapInterval: NodeJS.Timeout;
     if (isLoading) {
-      setProcessLog(["System initialized."]);
+      setProcessLog([`[${new Date().toLocaleTimeString()}] System initialized.`]);
       setScrapLogs([
         `> INITIALIZING SCRAPER FOR: "${query}"`, 
         "> BYPASSING CAPTCHAS...", 
@@ -171,7 +181,7 @@ export default function App() {
       interval = setInterval(() => {
         setLoadingStepIndex((prev) => {
           const next = (prev + 1) % LOADING_STEPS.length;
-          setProcessLog(log => [...log, LOADING_STEPS[next].message].slice(-5));
+          setProcessLog(log => [...log, `[${new Date().toLocaleTimeString()}] ${LOADING_STEPS[next].message}`].slice(-5));
           return next;
         });
       }, 5600);
@@ -239,7 +249,7 @@ export default function App() {
       const data = await factCheckNews(
         query, 
         (waitTime) => {
-          setProcessLog(prev => [...prev, `⚠️ SYSTEM LIMIT HIT. STOPPING FOR ${Math.round(waitTime/1000)}s...`]);
+          setProcessLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⚠️ SYSTEM LIMIT HIT. STOPPING FOR ${Math.round(waitTime/1000)}s...`]);
           setScrapLogs(prev => [...prev, `[SYSTEM] QUOTA EXHAUSTED. ENTERING PAUSE MODE (${Math.round(waitTime/1000)}s)...`]);
         },
         () => {
@@ -614,6 +624,16 @@ export default function App() {
             <div>
               <p className="font-semibold">Analysis Failed</p>
               <p className="text-sm opacity-90">{error}</p>
+              <button
+                onClick={() => {
+                  localStorage.removeItem('system_usage');
+                  localStorage.removeItem('lifetime_usage');
+                  window.location.reload();
+                }}
+                className="mt-2 text-xs font-bold underline hover:text-red-900 dark:hover:text-red-300"
+              >
+                Reset Application Cache
+              </button>
             </div>
           </motion.div>
         )}
@@ -1146,6 +1166,16 @@ export default function App() {
                                systemStatus === "limited" ? "RATE_LIMITED" : "OFFLINE"}
                             </span>
                           </div>
+                          <button
+                            onClick={() => {
+                              localStorage.removeItem('system_usage');
+                              localStorage.removeItem('lifetime_usage');
+                              window.location.reload();
+                            }}
+                            className="mt-2 text-[10px] font-bold text-red-500 hover:text-red-400 underline"
+                          >
+                            Reset Cache
+                          </button>
                         </div>
                         <div className="space-y-1 text-right">
                           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Next Reset</p>
